@@ -1,6 +1,7 @@
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { ImageContent, Static, TextContent } from "@mariozechner/pi-ai";
 import { Type } from "@mariozechner/pi-ai";
+import type { BrowserRuntime } from "../runtime/index.js";
 import { resolveTabTarget } from "./helpers/browser-target.js";
 
 const EXTRACT_IMAGE_DESCRIPTION = `Extract images from the current page. Returns image data that you can see and analyze.
@@ -29,11 +30,11 @@ export interface ExtractImageDetails {
 }
 
 /**
- * Get image info from the page via userScripts.
- * Only reads the src/currentSrc URL or data URL from the DOM.
- * Does NOT try to draw or fetch anything in page context.
+ * Get image src/dimensions from the page via BrowserRuntime.executeInPage.
+ * Works on both Chrome (userScripts) and Firefox (scripting ISOLATED world).
  */
 async function getImageInfoFromPage(
+	runtime: BrowserRuntime,
 	tabId: number,
 	selector: string,
 ): Promise<{ src: string; width: number; height: number } | string> {
@@ -64,7 +65,6 @@ async function getImageInfoFromPage(
 			}
 		}
 
-		// Check for background-image
 		const bg = getComputedStyle(el).backgroundImage;
 		if (bg && bg !== 'none') {
 			const match = bg.match(/url\\(["']?(.+?)["']?\\)/);
@@ -74,36 +74,14 @@ async function getImageInfoFromPage(
 		return { success: false, error: 'Element <' + el.tagName.toLowerCase() + '> is not an image, canvas, or element with background-image' };
 	})()`;
 
-	try {
-		await chrome.userScripts.configureWorld({
-			worldId: "shuvgeist-extract-image",
-			messaging: true,
-		});
-	} catch {
-		// Already configured
-	}
-
-	const results = await chrome.userScripts.execute({
-		js: [{ code }],
-		target: { tabId, allFrames: false },
-		world: "USER_SCRIPT",
-		worldId: "shuvgeist-extract-image",
-		injectImmediately: true,
-	} as any);
-
-	const result = (results as any)?.[0]?.result;
+	const result = await runtime.executeInPage(code, { tabId, worldId: "shuvgeist-extract-image" }) as any;
 	if (!result) return "Failed to execute script in page";
 	if (!result.success) return result.error;
 	return { src: result.src, width: result.width || 0, height: result.height || 0 };
 }
 
-/** Default WebP quality for token-efficient image encoding. */
 const IMAGE_WEBP_QUALITY = 0.8;
 
-/**
- * Convert a data URL to a Blob without fetch() (Chrome removed fetch on
- * data: URLs in recent versions).
- */
 function dataUrlToBlob(dataUrl: string): Blob {
 	const [header, b64] = dataUrl.split(",");
 	const mime = header.match(/:(.*?);/)?.[1] || "application/octet-stream";
@@ -113,16 +91,8 @@ function dataUrlToBlob(dataUrl: string): Blob {
 	return new Blob([bytes], { type: mime });
 }
 
-/**
- * Fetch an image URL from the extension context (has host_permissions),
- * resize it, and return as base64 WebP ImageContent.
- *
- * Uses WebP encoding at quality 80 for ~95% size reduction vs PNG,
- * significantly reducing token usage when images are sent to LLMs.
- */
 async function fetchAndResizeImage(src: string, maxWidth: number): Promise<ImageContent> {
 	let blob: Blob;
-
 	if (src.startsWith("data:")) {
 		blob = dataUrlToBlob(src);
 	} else {
@@ -134,7 +104,6 @@ async function fetchAndResizeImage(src: string, maxWidth: number): Promise<Image
 	const img = await createImageBitmap(blob);
 	let w = img.width;
 	let h = img.height;
-
 	if (w > maxWidth) {
 		h = Math.round(h * (maxWidth / w));
 		w = maxWidth;
@@ -154,17 +123,18 @@ async function fetchAndResizeImage(src: string, maxWidth: number): Promise<Image
 	return { type: "image", data: base64, mimeType: "image/webp" };
 }
 
-async function captureScreenshot(maxWidth: number, windowId: number): Promise<ImageContent> {
-	const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: "png" });
-	return fetchAndResizeImage(dataUrl, maxWidth);
-}
-
 export class ExtractImageTool implements AgentTool<typeof extractImageSchema, ExtractImageDetails> {
 	name = "extract_image";
 	label = "Extract Image";
 	description = EXTRACT_IMAGE_DESCRIPTION;
 	parameters = extractImageSchema;
 	windowId?: number;
+	private readonly runtime: BrowserRuntime;
+
+	constructor(runtime: BrowserRuntime, windowId?: number) {
+		this.runtime = runtime;
+		this.windowId = windowId;
+	}
 
 	async execute(
 		_toolCallId: string,
@@ -176,17 +146,15 @@ export class ExtractImageTool implements AgentTool<typeof extractImageSchema, Ex
 		const details: ExtractImageDetails = { mode: args.mode, selector: args.selector };
 
 		if (args.mode === "screenshot") {
-			if (!this.windowId) throw new Error("windowId not set on ExtractImageTool");
-			const image = await captureScreenshot(maxWidth, this.windowId);
+			const b64 = await this.runtime.captureScreenshot();
+			const image = await fetchAndResizeImage(b64, maxWidth);
 			content.push(image);
 			content.push({ type: "text", text: `Screenshot captured (max ${maxWidth}px width)` });
 		} else if (args.mode === "selector") {
 			if (!args.selector) throw new Error("selector is required for 'selector' mode");
 			const { tabId } = await resolveTabTarget({ windowId: this.windowId });
-
-			const info = await getImageInfoFromPage(tabId, args.selector);
+			const info = await getImageInfoFromPage(this.runtime, tabId, args.selector);
 			if (typeof info === "string") throw new Error(info);
-
 			const image = await fetchAndResizeImage(info.src, maxWidth);
 			content.push(image);
 			content.push({

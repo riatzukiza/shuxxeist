@@ -1,7 +1,7 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { type Static, StringEnum, Type } from "@mariozechner/pi-ai";
+import type { BrowserRuntime } from "../runtime/index.js";
 import { resolveBrowserTarget } from "./helpers/browser-target.js";
-import { type DebuggerManager, getSharedDebuggerManager } from "./helpers/debugger-manager.js";
 
 // ============================================================================
 // TYPES
@@ -28,7 +28,7 @@ export interface DebuggerResult {
 
 export interface DebuggerToolOptions {
 	windowId?: number;
-	debuggerManager?: DebuggerManager;
+	runtime: BrowserRuntime;
 }
 
 // ============================================================================
@@ -62,99 +62,47 @@ ACTIONS:
 CRITICAL: Use browserjs() and repl tool for DOM manipulation. Use this ONLY for MAIN world access or browser APIs.`;
 	parameters = debuggerSchema;
 	windowId?: number;
-	private readonly debuggerManager: DebuggerManager;
+	private readonly runtime: BrowserRuntime;
 
-	constructor(options: DebuggerToolOptions = {}) {
+	constructor(options: DebuggerToolOptions) {
 		this.windowId = options.windowId;
-		this.debuggerManager = options.debuggerManager ?? getSharedDebuggerManager();
+		this.runtime = options.runtime;
 	}
 
 	async execute(
-		toolCallId: string,
+		_toolCallId: string,
 		args: DebuggerParams,
 		signal?: AbortSignal,
 	): Promise<{ content: Array<{ type: "text"; text: string }>; details: DebuggerResult }> {
-		if (signal?.aborted) {
-			throw new Error("Debugger command aborted");
-		}
+		if (signal?.aborted) throw new Error("Debugger command aborted");
 
-		const { tab, tabId, frameId } = await resolveBrowserTarget({
+		const { tab } = await resolveBrowserTarget({
 			windowId: this.windowId,
 			tabId: args.tabId,
 			frameId: args.frameId,
 		});
 
 		try {
-			// Handle cookies action
 			if (args.action === "cookies") {
-				// Check if cookies API is available
-				if (!chrome.cookies) {
-					throw new Error(
-						`TELL THE USER: Cookie access is not available. The "cookies" permission needs to be added to the extension manifest.\n\n` +
-							`INSTRUCT THE USER TO:\n` +
-							`1. Find where you unpacked the Shuvgeist extension files on your computer\n` +
-							`2. Open the manifest.json file in a text editor\n` +
-							`3. Find the "permissions" array\n` +
-							`4. Add "cookies" to the array if it's not already there. Example:\n\n` +
-							`   "permissions": [\n` +
-							`     "activeTab",\n` +
-							`     "storage",\n` +
-							`     "cookies"\n` +
-							`   ]\n\n` +
-							`5. Save the file\n` +
-							`6. Go to chrome://extensions (or about:addons for Firefox)\n` +
-							`7. Click the reload/refresh button (circular arrow icon) on the Shuvgeist extension card\n` +
-							`8. Try the cookies command again\n\n` +
-							`THEN: Ask the user to confirm when they've completed these steps so you can retry.`,
-					);
-				}
-
-				if (!tab.url) {
-					throw new Error("Cannot get cookies for a tab without a URL");
-				}
-
-				try {
-					const cookies = await chrome.cookies.getAll({ url: tab.url });
-					const output = cookies.map((cookie) => `${cookie.name}: ${cookie.value}`).join("\n");
-					const details: DebuggerResult = { value: cookies };
-					return { content: [{ type: "text", text: output }], details };
-				} catch (error) {
-					throw new Error(`Failed to get cookies: ${error instanceof Error ? error.message : String(error)}`);
-				}
+				if (!tab.url) throw new Error("Cannot get cookies for a tab without a URL");
+				const domain = new URL(tab.url).hostname;
+				const cookies = await this.runtime.getCookies(domain);
+				const output = cookies.map((c) => `${c.name}: ${c.value}`).join("\n");
+				return { content: [{ type: "text", text: output }], details: { value: cookies } };
 			}
 
-			// Handle eval action
 			if (args.action === "eval") {
-				if (!args.code) {
-					throw new Error("eval action requires code parameter");
-				}
-				if (frameId !== 0) {
-					throw new Error("Frame-targeted eval requires frame context support");
-				}
-
-				const owner = `debugger:${toolCallId}:${tabId}`;
-				await this.debuggerManager.acquire(tabId, owner);
-				try {
-					await this.debuggerManager.ensureDomain(tabId, "Runtime");
-					const result = await this.debuggerManager.sendCommand<unknown>(tabId, "Runtime.evaluate", {
-						expression: args.code,
-						returnByValue: true,
-					});
-					const details: DebuggerResult = { value: result };
-
-					let output = "";
-					if (result === undefined) {
-						output = "undefined";
-					} else if (typeof result === "string") {
-						output = result;
-					} else {
-						output = JSON.stringify(result, null, 2);
-					}
-
-					return { content: [{ type: "text", text: output }], details };
-				} finally {
-					await this.debuggerManager.release(tabId, owner);
-				}
+				if (!args.code) throw new Error("eval action requires code parameter");
+				const result = await this.runtime.executeInMainWorld(args.code, {
+					tabId: args.tabId,
+					frameId: args.frameId,
+					signal,
+				});
+				let output: string;
+				if (result === undefined) output = "undefined";
+				else if (typeof result === "string") output = result;
+				else output = JSON.stringify(result, null, 2);
+				return { content: [{ type: "text", text: output }], details: { value: result } };
 			}
 
 			throw new Error(`Unknown action: ${args.action}`);
