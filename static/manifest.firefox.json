@@ -1,0 +1,63 @@
+{
+	"manifest_version": 3,
+	"name": "Shuvgeist",
+	"description": "Your clanker for the web - Research, automate, create",
+	"version": "1.1.7",
+	"browser_specific_settings": {
+		"gecko": {
+			"id": "shuvgeist@riatzukiza",
+			"strict_min_version": "128.0"
+		}
+	},
+	"action": {
+		"default_title": "Shuvgeist"
+	},
+	"background": {
+		"scripts": ["background.js"],
+		"type": "module"
+	},
+	"sidebar_action": {
+		"default_panel": "sidepanel.html",
+		"default_title": "Shuvgeist",
+		"default_icon": {
+			"16": "icon-16.png",
+			"48": "icon-48.png",
+			"128": "icon-128.png"
+		}
+	},
+	"icons": {
+		"16": "icon-16.png",
+		"48": "icon-48.png",
+		"128": "icon-128.png"
+	},
+	"commands": {
+		"_execute_sidebar_action": {
+			"suggested_key": {
+				"default": "Ctrl+Shift+S",
+				"mac": "Command+Shift+S"
+			},
+			"description": "Toggle sidebar"
+		}
+	},
+	"permissions": [
+		"storage",
+		"unlimitedStorage",
+		"activeTab",
+		"scripting",
+		"webNavigation",
+		"cookies",
+		"alarms"
+	],
+	"host_permissions": [
+		"<all_urls>"
+	],
+	"sandbox": {
+		"pages": [
+			"sandbox.html"
+		]
+	},
+	"content_security_policy": {
+		"extension_pages": "script-src 'self'; object-src 'self'; connect-src ws://*:* wss://*:* http://*:* https://*:*",
+		"sandbox": "sandbox allow-scripts allow-modals; default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net/ https://unpkg.com/ https://cdnjs.cloudflare.com/ https://esm.sh/ https://esm.run/ https://cdn.skypack.dev/ https://cdn.tailwindcss.com; script-src-elem 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net/ https://unpkg.com/ https://cdnjs.cloudflare.com/ https://esm.sh/ https://esm.run/ https://cdn.skypack.dev/ https://cdn.tailwindcss.com; connect-src https://cdn.jsdelivr.net/ https://unpkg.com/ https://cdnjs.cloudflare.com/ https://esm.sh/ https://esm.run/ https://cdn.skypack.dev/ https://cdn.tailwindcss.com https://t1.gstatic.com/; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net/ https://cdnjs.cloudflare.com/ https://cdn.tailwindcss.com; img-src 'self' data: blob: https:; font-src 'self' data: https://cdn.jsdelivr.net/ https://cdnjs.cloudflare.com/; object-src 'none'; base-uri 'none'; form-action 'none'"
+	}
+}
